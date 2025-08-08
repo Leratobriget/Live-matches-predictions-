@@ -1,207 +1,390 @@
-
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
-import 'dart:math';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 void main() {
-  runApp(const MatchPredictionApp());
+  runApp(const SportsHubApp());
 }
 
-class MatchPredictionApp extends StatelessWidget {
-  const MatchPredictionApp({Key? key}) : super(key: key);
+const String apiKey = 'a659233966294c0a9cfda289bc9e4a3c';
+
+// -- App-wide enums and config --
+
+enum SportsCategory { nfl, soccer }
+const Map<SportsCategory, String> categoryNames = {
+  SportsCategory.nfl: "NFL",
+  SportsCategory.soccer: "Soccer (EPL)"
+};
+const Map<SportsCategory, String> leagueCodes = {
+  SportsCategory.nfl: "",
+  SportsCategory.soccer: "EPL",
+};
+const Map<SportsCategory, List<int>> seasonYears = {
+  SportsCategory.nfl: [2024, 2023, 2022],
+  SportsCategory.soccer: [2024, 2023, 2022],
+};
+
+class SportsHubApp extends StatelessWidget {
+  const SportsHubApp({Key? key}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => PredictionProvider(),
-      child: MaterialApp(
-        title: 'Match Predictions',
-        theme: ThemeData(
-          primarySwatch: Colors.blue,
-          scaffoldBackgroundColor: Colors.grey[50],
-          appBarTheme: const AppBarTheme(
-            backgroundColor: Colors.indigo,
-            foregroundColor: Colors.white,
-            elevation: 0,
+    return MaterialApp(
+      title: 'Sports Hub',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.grey[50],
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.indigo,
+          foregroundColor: Colors.white,
+          elevation: 1,
+          centerTitle: true,
+        ),
+        cardTheme: const CardThemeData(
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(14))),
+          elevation: 3,
+          margin: EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+          color: Colors.white,
+        ),
+        tabBarTheme: const TabBarThemeData(
+          labelColor: Colors.indigo,
+          unselectedLabelColor: Colors.grey,
+          indicatorColor: Colors.indigo,
+        ),
+      ),
+      home: const HomeTabScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class HomeTabScreen extends StatefulWidget {
+  const HomeTabScreen({Key? key}) : super(key: key);
+
+  @override
+  State<HomeTabScreen> createState() => _HomeTabScreenState();
+}
+
+class _HomeTabScreenState extends State<HomeTabScreen> {
+  SportsCategory _selectedCategory = SportsCategory.nfl;
+  late int _selectedSeason;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedSeason = seasonYears[_selectedCategory]!.first;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final seasons = seasonYears[_selectedCategory]!;
+
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Sports Hub'),
+          actions: [
+            // Category Picker
+            DropdownButtonHideUnderline(
+              child: DropdownButton<SportsCategory>(
+                dropdownColor: Colors.white,
+                value: _selectedCategory,
+                items: categoryNames.entries.map((entry) {
+                  return DropdownMenuItem<SportsCategory>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  if (val != null && val != _selectedCategory) {
+                    setState(() {
+                      _selectedCategory = val;
+                      _selectedSeason = seasonYears[val]!.first;
+                    });
+                  }
+                },
+                style: const TextStyle(
+                    color: Colors.indigo, fontWeight: FontWeight.w600),
+                icon: const Padding(
+                  padding: EdgeInsets.only(left: 6),
+                  child: Icon(Icons.sports, color: Colors.white),
+                ),
+              ),
+            ),
+            // Season Picker
+            DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                dropdownColor: Colors.white,
+                value: _selectedSeason,
+                items: seasons.map((season) {
+                  return DropdownMenuItem<int>(
+                    value: season,
+                    child: Text(season.toString()),
+                  );
+                }).toList(),
+                onChanged: (val) {
+                  if (val != null && val != _selectedSeason) {
+                    setState(() => _selectedSeason = val);
+                  }
+                },
+                style: const TextStyle(
+                    color: Colors.indigo, fontWeight: FontWeight.w600),
+                icon: const Padding(
+                  padding: EdgeInsets.only(left: 6),
+                  child: Icon(Icons.calendar_today, color: Colors.white, size: 20),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Matches', icon: Icon(Icons.sports_soccer)),
+              Tab(text: 'Standings', icon: Icon(Icons.leaderboard)),
+            ],
           ),
         ),
-        home: const PredictionsScreen(),
-        debugShowCheckedModeBanner: false,
+        body: TabBarView(
+          children: [
+            MatchesScreen(
+              category: _selectedCategory,
+              season: _selectedSeason,
+            ),
+            StandingsScreen(
+              category: _selectedCategory,
+              season: _selectedSeason,
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class MatchPrediction {
-  final String id;
+// ------------------ MATCHES SCREEN ------------------
+
+class SportsMatch {
+  // Covers both NFL and Soccer (EPL)
   final String homeTeam;
   final String awayTeam;
-  final DateTime matchTime;
-  final String league;
-  final double homeWinProbability;
-  final double drawProbability;
-  final double awayWinProbability;
-  final String predictedOutcome;
-  final double confidence;
-  final String status;
+  final DateTime dateTime;
   final int? homeScore;
   final int? awayScore;
+  final String status; // "Scheduled", "InProgress", "Final", etc.
+  final String stadium;
+  final String description; // e.g., week/round
 
-  MatchPrediction({
-    required this.id,
+  SportsMatch({
     required this.homeTeam,
     required this.awayTeam,
-    required this.matchTime,
-    required this.league,
-    required this.homeWinProbability,
-    required this.drawProbability,
-    required this.awayWinProbability,
-    required this.predictedOutcome,
-    required this.confidence,
-    required this.status,
+    required this.dateTime,
     this.homeScore,
     this.awayScore,
+    required this.status,
+    required this.stadium,
+    required this.description,
   });
 
-  Color get confidenceColor {
-    if (confidence >= 0.8) return Colors.green;
-    if (confidence >= 0.6) return Colors.orange;
-    return Colors.red;
+  factory SportsMatch.fromJsonNFL(Map<String, dynamic> json) {
+    return SportsMatch(
+      homeTeam: json['HomeTeam'] ?? '',
+      awayTeam: json['AwayTeam'] ?? '',
+      dateTime: DateTime.tryParse(json['Date']) ?? DateTime.now(),
+      homeScore: json['HomeScore'] is int ? json['HomeScore'] : null,
+      awayScore: json['AwayScore'] is int ? json['AwayScore'] : null,
+      status: json['Status'] ?? '',
+      stadium: json['StadiumDetails']?['Name'] ?? '',
+      description: json['Week'] != null ? 'Week ${json['Week']}' : '',
+    );
   }
 
-  String get confidenceText {
-    if (confidence >= 0.8) return 'High';
-    if (confidence >= 0.6) return 'Medium';
-    return 'Low';
-  }
-}
-
-class PredictionProvider extends ChangeNotifier {
-  List<MatchPrediction> _predictions = [];
-  bool _isLoading = false;
-
-  List<MatchPrediction> get predictions => _predictions;
-  bool get isLoading => _isLoading;
-
-  Future<void> loadPredictions() async {
-    _isLoading = true;
-    notifyListeners();
-
-    await Future.delayed(const Duration(seconds: 1));
-
-    final random = Random();
-    final teams = [
-      'Manchester United', 'Liverpool', 'Arsenal', 'Chelsea', 'Manchester City',
-      'Barcelona', 'Real Madrid', 'Bayern Munich', 'AC Milan', 'PSG'
-    ];
-    
-    final leagues = ['Premier League', 'La Liga', 'Bundesliga', 'Serie A'];
-    final statuses = ['LIVE', 'UPCOMING', 'FINISHED'];
-    
-    _predictions = List.generate(10, (index) {
-      final homeTeam = teams[random.nextInt(teams.length)];
-      var awayTeam = teams[random.nextInt(teams.length)];
-      while (awayTeam == homeTeam) {
-        awayTeam = teams[random.nextInt(teams.length)];
-      }
-      
-      final homeWin = 0.1 + random.nextDouble() * 0.7;
-      final draw = (1.0 - homeWin) * (0.2 + random.nextDouble() * 0.4);
-      final awayWin = 1.0 - homeWin - draw;
-      
-      final predictedOutcome = homeWin > draw && homeWin > awayWin 
-          ? 'Home Win' 
-          : awayWin > draw 
-              ? 'Away Win' 
-              : 'Draw';
-      
-      final confidence = 0.5 + random.nextDouble() * 0.4;
-      final status = statuses[random.nextInt(statuses.length)];
-      
-      DateTime matchTime;
-      if (status == 'LIVE') {
-        matchTime = DateTime.now().subtract(Duration(minutes: random.nextInt(90)));
-      } else if (status == 'UPCOMING') {
-        matchTime = DateTime.now().add(Duration(hours: random.nextInt(48) + 1));
-      } else {
-        matchTime = DateTime.now().subtract(Duration(hours: random.nextInt(72) + 1));
-      }
-      
-      return MatchPrediction(
-        id: 'match_$index',
-        homeTeam: homeTeam,
-        awayTeam: awayTeam,
-        matchTime: matchTime,
-        league: leagues[random.nextInt(leagues.length)],
-        homeWinProbability: homeWin,
-        drawProbability: draw,
-        awayWinProbability: awayWin,
-        predictedOutcome: predictedOutcome,
-        confidence: confidence,
-        status: status,
-        homeScore: status == 'FINISHED' || status == 'LIVE' ? random.nextInt(4) : null,
-        awayScore: status == 'FINISHED' || status == 'LIVE' ? random.nextInt(4) : null,
-      );
-    });
-
-    _isLoading = false;
-    notifyListeners();
+  factory SportsMatch.fromJsonSoccer(Map<String, dynamic> json) {
+    return SportsMatch(
+      homeTeam: json['HomeTeamName'] ?? '',
+      awayTeam: json['AwayTeamName'] ?? '',
+      dateTime: DateTime.tryParse(json['DateTime']) ?? DateTime.now(),
+      homeScore: json['HomeTeamScore'] is int ? json['HomeTeamScore'] : null,
+      awayScore: json['AwayTeamScore'] is int ? json['AwayTeamScore'] : null,
+      status: json['Status'] ?? '',
+      stadium: json['Stadium'] ?? '',
+      description: json['Round'] != null ? 'Round ${json['Round']}' : '',
+    );
   }
 }
 
-class PredictionsScreen extends StatefulWidget {
-  const PredictionsScreen({Key? key}) : super(key: key);
+Future<List<SportsMatch>> fetchMatches({
+  required SportsCategory category,
+  required int season,
+}) async {
+  if (category == SportsCategory.nfl) {
+    // NFL - Games/{season}
+    final url =
+        'https://api.sportsdata.io/v3/nfl/scores/json/Games/$season?key=$apiKey';
+    final response = await http.get(Uri.parse(url));
+    if (response.statusCode == 200) {
+      final List data = json.decode(response.body);
+      return data.map((json) => SportsMatch.fromJsonNFL(json)).toList();
+    } else {
+      throw Exception('Failed to load NFL matches');
+    }
+  } else if (category == SportsCategory.soccer) {
+    // Soccer (EPL) - GamesBySeason/{season}
+    final url =
+        'https://api.sportsdata.io/v3/soccer/scores/json/GamesBySeason/EPL/$season?key=$apiKey';
+    final response = await http.get(Uri.parse(url));
+    if (response.statusCode == 200) {
+      final List data = json.decode(response.body);
+      return data.map((json) => SportsMatch.fromJsonSoccer(json)).toList();
+    } else {
+      throw Exception('Failed to load Soccer matches');
+    }
+  }
+  return [];
+}
+
+class MatchesScreen extends StatefulWidget {
+  final SportsCategory category;
+  final int season;
+  const MatchesScreen({Key? key, required this.category, required this.season})
+      : super(key: key);
 
   @override
-  State<PredictionsScreen> createState() => _PredictionsScreenState();
+  State<MatchesScreen> createState() => _MatchesScreenState();
 }
 
-class _PredictionsScreenState extends State<PredictionsScreen> {
+class _MatchesScreenState extends State<MatchesScreen> {
+  late Future<List<SportsMatch>> _futureMatches;
+
+  @override
+  void didUpdateWidget(MatchesScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.category != widget.category || oldWidget.season != widget.season) {
+      _futureMatches = fetchMatches(category: widget.category, season: widget.season);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<PredictionProvider>(context, listen: false).loadPredictions();
+    _futureMatches = fetchMatches(category: widget.category, season: widget.season);
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _futureMatches =
+          fetchMatches(category: widget.category, season: widget.season);
     });
+  }
+
+  Color _statusColor(String status) {
+    switch (status.toLowerCase()) {
+      case 'inprogress':
+      case 'in progress':
+        return Colors.orange;
+      case 'final':
+      case 'completed':
+        return Colors.green;
+      case 'scheduled':
+      default:
+        return Colors.blueGrey;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Match Predictions'),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () {
-              Provider.of<PredictionProvider>(context, listen: false).loadPredictions();
-            },
-          ),
-        ],
-      ),
-      body: Consumer<PredictionProvider>(
-        builder: (context, provider, child) {
-          if (provider.isLoading) {
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: FutureBuilder<List<SportsMatch>>(
+        future: _futureMatches,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
+          } else if (snapshot.hasError) {
+            return _ErrorState(
+                message: "Failed to load matches.\n${snapshot.error}");
+          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+            return const _ErrorState(
+                message: "No matches found for this category/season.");
           }
 
-          if (provider.predictions.isEmpty) {
-            return const Center(
-              child: Text(
-                'No predictions available',
-                style: TextStyle(fontSize: 18, color: Colors.grey),
-              ),
-            );
-          }
-
+          final matches = snapshot.data!;
           return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: provider.predictions.length,
-            itemBuilder: (context, index) {
-              final prediction = provider.predictions[index];
-              return PredictionCard(prediction: prediction);
+            padding: const EdgeInsets.only(top: 12, bottom: 24),
+            itemCount: matches.length,
+            itemBuilder: (context, idx) {
+              final m = matches[idx];
+              return Card(
+                child: ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 18),
+                  leading: CircleAvatar(
+                    backgroundColor: _statusColor(m.status),
+                    child: Text(
+                      m.status.isNotEmpty ? m.status[0] : "",
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                  title: Text(
+                    '${m.awayTeam} @ ${m.homeTeam}',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        (m.status.toLowerCase() == 'final' ||
+                                m.status.toLowerCase() == 'completed' ||
+                                m.status.toLowerCase() == 'inprogress' ||
+                                m.status.toLowerCase() == 'in progress')
+                            ? '${m.awayScore ?? "-"} - ${m.homeScore ?? "-"}'
+                            : 'Kickoff: ${DateFormat('MMM dd, h:mm a').format(m.dateTime)}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w500,
+                          color: m.status.toLowerCase() == 'final' ||
+                                  m.status.toLowerCase() == 'completed'
+                              ? Colors.green
+                              : (m.status.toLowerCase() == 'inprogress' ||
+                                      m.status.toLowerCase() == 'in progress'
+                                  ? Colors.orange
+                                  : Colors.blueGrey),
+                        ),
+                      ),
+                      if (m.stadium.isNotEmpty)
+                        Text(
+                          m.stadium,
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      if (m.description.isNotEmpty)
+                        Text(
+                          m.description,
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.indigoAccent),
+                        ),
+                    ],
+                  ),
+                  trailing: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _statusColor(m.status).withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      m.status,
+                      style: TextStyle(
+                        color: _statusColor(m.status),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                  ),
+                ),
+              );
             },
           );
         },
@@ -210,236 +393,308 @@ class _PredictionsScreenState extends State<PredictionsScreen> {
   }
 }
 
-class PredictionCard extends StatelessWidget {
-  final MatchPrediction prediction;
+// ------------------ STANDINGS SCREEN ------------------
 
-  const PredictionCard({Key? key, required this.prediction}) : super(key: key);
+class TeamStanding {
+  final String team;
+  final int wins;
+  final int losses;
+  final int ties; // draws for soccer
+  final int pointsFor;
+  final int pointsAgainst;
+  final String conference;
+  final String division;
+  final int? points; // for soccer
+
+  TeamStanding({
+    required this.team,
+    required this.wins,
+    required this.losses,
+    required this.ties,
+    required this.pointsFor,
+    required this.pointsAgainst,
+    required this.conference,
+    required this.division,
+    this.points,
+  });
+
+  factory TeamStanding.fromJsonNFL(Map<String, dynamic> json) {
+    return TeamStanding(
+      team: json['Name'] ?? '',
+      wins: json['Wins'] ?? 0,
+      losses: json['Losses'] ?? 0,
+      ties: json['Ties'] ?? 0,
+      pointsFor: json['PointsFor']?.toInt() ?? 0,
+      pointsAgainst: json['PointsAgainst']?.toInt() ?? 0,
+      conference: json['Conference'] ?? '',
+      division: json['Division'] ?? '',
+      points: null,
+    );
+  }
+
+  factory TeamStanding.fromJsonSoccer(Map<String, dynamic> json) {
+    return TeamStanding(
+      team: json['Name'] ?? '',
+      wins: json['Wins'] ?? 0,
+      losses: json['Losses'] ?? 0,
+      ties: json['Draws'] ?? 0,
+      pointsFor: json['GoalsFor']?.toInt() ?? 0,
+      pointsAgainst: json['GoalsAgainst']?.toInt() ?? 0,
+      conference: '', // Soccer doesn't have this
+      division: '', // Soccer doesn't have this
+      points: json['Points'] ?? 0,
+    );
+  }
+}
+
+Future<List<TeamStanding>> fetchStandings(
+    {required SportsCategory category, required int season}) async {
+  if (category == SportsCategory.nfl) {
+    final url =
+        'https://api.sportsdata.io/v3/nfl/scores/json/Standings/$season?key=$apiKey';
+    final response = await http.get(Uri.parse(url));
+    if (response.statusCode == 200) {
+      final List data = json.decode(response.body);
+      return data.map((json) => TeamStanding.fromJsonNFL(json)).toList();
+    } else {
+      throw Exception('Failed to load NFL standings');
+    }
+  } else if (category == SportsCategory.soccer) {
+    final url =
+        'https://api.sportsdata.io/v3/soccer/scores/json/Standings/EPL/$season?key=$apiKey';
+    final response = await http.get(Uri.parse(url));
+    if (response.statusCode == 200) {
+      final List data = json.decode(response.body);
+      return data.map((json) => TeamStanding.fromJsonSoccer(json)).toList();
+    } else {
+      throw Exception('Failed to load Soccer standings');
+    }
+  }
+  return [];
+}
+
+class StandingsScreen extends StatefulWidget {
+  final SportsCategory category;
+  final int season;
+  const StandingsScreen({Key? key, required this.category, required this.season})
+      : super(key: key);
+
+  @override
+  State<StandingsScreen> createState() => _StandingsScreenState();
+}
+
+class _StandingsScreenState extends State<StandingsScreen> {
+  late Future<List<TeamStanding>> _futureStandings;
+
+  @override
+  void didUpdateWidget(StandingsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.category != widget.category || oldWidget.season != widget.season) {
+      _futureStandings =
+          fetchStandings(category: widget.category, season: widget.season);
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _futureStandings =
+        fetchStandings(category: widget.category, season: widget.season);
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      _futureStandings =
+          fetchStandings(category: widget.category, season: widget.season);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header with league and status
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.indigo.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    prediction.league,
-                    style: const TextStyle(
-                      color: Colors.indigo,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                Row(
+    return RefreshIndicator(
+      onRefresh: _refresh,
+      child: FutureBuilder<List<TeamStanding>>(
+        future: _futureStandings,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          } else if (snapshot.hasError) {
+            return _ErrorState(
+                message: "Failed to load standings.\n${snapshot.error}");
+          } else if (!snapshot.hasData || snapshot.data!.isEmpty) {
+            return const _ErrorState(
+                message: "No standings found for this category/season.");
+          }
+          final teams = snapshot.data!;
+          if (widget.category == SportsCategory.nfl) {
+            // NFL - Conference and Division headers
+            teams.sort((a, b) {
+              int cmp = a.conference.compareTo(b.conference);
+              if (cmp != 0) return cmp;
+              cmp = a.division.compareTo(b.division);
+              if (cmp != 0) return cmp;
+              return b.wins.compareTo(a.wins);
+            });
+
+            String? lastHeader;
+            return ListView.builder(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              itemCount: teams.length,
+              itemBuilder: (context, idx) {
+                final t = teams[idx];
+                final header = '${t.conference} ${t.division}';
+                final showHeader = header != lastHeader;
+                lastHeader = header;
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: _getStatusColor(),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        prediction.status,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      DateFormat('MMM dd, HH:mm').format(prediction.matchTime),
-                      style: const TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            
-            // Teams and score
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        prediction.homeTeam,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      Text('Home', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                    ],
-                  ),
-                ),
-                
-                if (prediction.homeScore != null && prediction.awayScore != null) ...[
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      '${prediction.homeScore} - ${prediction.awayScore}',
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ] else ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 12),
-                    child: Text('vs', style: TextStyle(fontSize: 16, color: Colors.grey)),
-                  ),
-                ],
-                
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text(
-                        prediction.awayTeam,
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.right,
-                      ),
-                      Text('Away', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            
-            // Prediction bars
-            Column(
-              children: [
-                const Text(
-                  'Win Probability',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.grey),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: (prediction.homeWinProbability * 100).round(),
-                      child: Container(
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: Colors.blue,
-                          borderRadius: BorderRadius.only(
-                            topLeft: Radius.circular(4),
-                            bottomLeft: Radius.circular(4),
-                          ),
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: (prediction.drawProbability * 100).round(),
-                      child: Container(height: 8, color: Colors.orange),
-                    ),
-                    Expanded(
-                      flex: (prediction.awayWinProbability * 100).round(),
-                      child: Container(
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: Colors.green,
-                          borderRadius: BorderRadius.only(
-                            topRight: Radius.circular(4),
-                            bottomRight: Radius.circular(4),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('${(prediction.homeWinProbability * 100).toStringAsFixed(1)}%',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.blue)),
-                    Text('${(prediction.drawProbability * 100).toStringAsFixed(1)}%',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.orange)),
-                    Text('${(prediction.awayWinProbability * 100).toStringAsFixed(1)}%',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.green)),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            
-            // Prediction summary
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey[200]!),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Predicted Outcome', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                      const SizedBox(height: 2),
-                      Text(prediction.predictedOutcome, 
-                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      const Text('Confidence', style: TextStyle(fontSize: 12, color: Colors.grey)),
-                      const SizedBox(height: 2),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: prediction.confidenceColor,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
+                    if (showHeader && header.trim().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 22, 16, 6),
                         child: Text(
-                          '${prediction.confidenceText} (${(prediction.confidence * 100).toStringAsFixed(0)}%)',
-                          style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.w500),
+                          header,
+                          style: const TextStyle(
+                            color: Colors.indigo,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.8,
+                          ),
                         ),
                       ),
-                    ],
+                    Card(
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 18, vertical: 10),
+                        title: Text(t.team,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600)),
+                        subtitle: Row(
+                          children: [
+                            Text('W: ${t.wins}',
+                                style: const TextStyle(color: Colors.green)),
+                            const SizedBox(width: 12),
+                            Text('L: ${t.losses}',
+                                style: const TextStyle(color: Colors.red)),
+                            const SizedBox(width: 12),
+                            Text('T: ${t.ties}',
+                                style: const TextStyle(color: Colors.orange)),
+                          ],
+                        ),
+                        trailing: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text('PF: ${t.pointsFor}',
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.black54)),
+                            Text('PA: ${t.pointsAgainst}',
+                                style: const TextStyle(
+                                    fontSize: 12, color: Colors.black54)),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          } else {
+            // Soccer - Simple table
+            teams.sort((a, b) => b.points!.compareTo(a.points!));
+            return ListView.separated(
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+              itemCount: teams.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (context, idx) {
+                final t = teams[idx];
+                return Card(
+                  child: ListTile(
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                    leading: CircleAvatar(
+                      backgroundColor: Colors.indigo,
+                      child: Text(
+                        '${idx + 1}',
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    title: Text(t.team,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Row(
+                      children: [
+                        Text('W: ${t.wins}',
+                            style: const TextStyle(color: Colors.green)),
+                        const SizedBox(width: 10),
+                        Text('D: ${t.ties}',
+                            style: const TextStyle(color: Colors.orange)),
+                        const SizedBox(width: 10),
+                        Text('L: ${t.losses}',
+                            style: const TextStyle(color: Colors.red)),
+                        const SizedBox(width: 10),
+                        Text('Pts: ${t.points}',
+                            style: const TextStyle(
+                                color: Colors.black87, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                    trailing: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text('GF: ${t.pointsFor}',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.black54)),
+                        Text('GA: ${t.pointsAgainst}',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.black54)),
+                      ],
+                    ),
                   ),
-                ],
+                );
+              },
+            );
+          }
+        },
+      ),
+    );
+  }
+}
+
+// -------------- ErrorState Widget --------------
+class _ErrorState extends StatelessWidget {
+  final String message;
+  const _ErrorState({Key? key, required this.message}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style:
+                  const TextStyle(fontSize: 16, color: Colors.black54, height: 1.4),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+              onPressed: () => Navigator.pushReplacement(
+                context,
+                PageRouteBuilder(
+                  pageBuilder: (_, __, ___) => const HomeTabScreen(),
+                  transitionDuration: Duration.zero,
+                ),
               ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  Color _getStatusColor() {
-    switch (prediction.status) {
-      case 'LIVE': return Colors.red;
-      case 'UPCOMING': return Colors.blue;
-      case 'FINISHED': return Colors.grey;
-      default: return Colors.grey;
-    }
   }
 }
